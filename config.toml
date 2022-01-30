@@ -90,6 +90,16 @@ uglyURLs = false
         startLevel = 2
         endLevel = 6
         ordered = true
+[params.giscus]
+ repo = "wiredhikari/pkgcraft.gihub.io" # Entering repo will enable giscus
+  repo_id = "453687247"
+  category = "Comments"
+  category_id = "enter-category-id"
+  mapping = "pathname"
+  reactions-enabled = "1"
+  emit-metadata = "0"
+  theme = "light"
+  lang = "en"
 
 # HTML minify
 [minify.tdewolff.html]
