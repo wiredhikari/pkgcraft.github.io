@@ -10,11 +10,12 @@
 
   # Configuration of giscus
   [comments.giscus]
-    repo = "<data-repo>" # Repo where the comments will live
-    repo_id = "<data-repo-id>" # Repo where the comments will live
-    category = "Announcements" # Repo where the comments will live
-    category_id = "<data-category-id>" # Repo where the comments will live
-    mapping = "pathname" # How Utterances will match comment to page
-    label = "comment" # Label applied to issue by utteranc.es bot
-    theme = "light" # What theme to use
-    reactions_enabled = 0
+ repo = "wiredhikari/pkgcraft.gihub.io" # Entering repo will enable giscus
+  repo_id = "453687247"
+  category = "Comments"
+  category_id = "enter-category-id"
+  mapping = "pathname"
+  reactions-enabled = "1"
+  emit-metadata = "0"
+  theme = "light"
+  lang = "en"
