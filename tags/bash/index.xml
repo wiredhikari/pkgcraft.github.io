@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>bash on Pkgcraft</title><link>https://pkgcraft.github.io/tags/bash/</link><description>Recent content in bash on Pkgcraft</description><generator>Hugo -- gohugo.io</generator><language>en</language><copyright>[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)</copyright><lastBuildDate>Tue, 25 Jan 2022 01:29:42 -0700</lastBuildDate><atom:link href="https://pkgcraft.github.io/tags/bash/index.xml" rel="self" type="application/rss+xml"/><item><title>Extending bash: Mangling the shell for better integration</title><link>https://pkgcraft.github.io/posts/extending-bash/</link><pubDate>Tue, 25 Jan 2022 01:29:42 -0700</pubDate><guid>https://pkgcraft.github.io/posts/extending-bash/</guid><description>&lt;p>Basing a package manager and related specification on bash is a mistake.
+Familiarity and hackability are great in the short-term, but as the novelty
+wears off it becomes clear that maintainability, efficiency, and other
+attributes hard to wrest from bash&amp;rsquo;s rigid design all suffer. As long as
+compatibility remains important for pkgcraft that decision can&amp;rsquo;t be altered;
+however, that doesn&amp;rsquo;t mean nothing can be done to improve the situation.&lt;/p>
+&lt;p>One option is to go pkgcore&amp;rsquo;s route, using IPC with a bash daemon. This enables
+sharing bash processes between separate tasks rather than relying on a
+simplistic exec-per-use scheme. Among other effects, this makes pkgcore&amp;rsquo;s
+metadata generation approximately five times faster than its main competitor.
+While providing many marginal improvements, this daemonized approach still
+doesn&amp;rsquo;t escape the restrictive boundaries of regular shell usage. Among other
+downsides, pkgcore requires subshells (meaning additional processes) to avoid
+environment leaks during metadata generation and uses hacky RPC signaling
+across pipes since it&amp;rsquo;s hard to work with anything else natively in bash.&lt;/p>
+&lt;p>Pkgcraft aims to move beyond daemon functionality and achieve better lower
+level integration. The dream of replacing bash with something threadable and
+modern is enticing, but it&amp;rsquo;s fairly impossible in the short-term and thus
+disregarded. Instead, pkgcraft dives directly into the pit of insanity; it
+forks bash&lt;sup id="fnref:1">&lt;a href="#fn:1" class="footnote-ref" role="doc-noteref">1&lt;/a>&lt;/sup> in an effort to achieve its goals.&lt;/p>
+&lt;h3 id="parallelism-problems">Parallelism problems&lt;/h3>
+&lt;p>Since pkgcraft goes to the extent of forking bash, it also takes on the various
+deficiencies that hinder its use as a library. For a start, bash is not
+thread-safe or reentrant at all. The current design uses an extensive amount of
+global mutables to track both its parser and shell state. Bash uses bison which
+supports generating reentrant parsers, but the shell itself requires extensive
+rework for that to be feasible on a global scale.&lt;/p>
+&lt;p>With that in mind, in order to support parallel usage a process pool or similar
+design must be used. Currently this isn&amp;rsquo;t something that can easily be dropped
+into place like python&amp;rsquo;s multiprocessing pool support. Parallelism in rust
+centers around threading since its memory safety through enforced lifetimes
+highlights threaded execution that&amp;rsquo;s guaranteed data-race free. This means that
+most data parallelism crates similar to rayon only support threaded operation,
+disregarding multi-process support entirely. At some point, pkgcraft will have
+to address this and probably create its own pool or parallelized iterator
+support that reuses processes.&lt;/p>
+&lt;h3 id="error-handling">Error handling&lt;/h3>
+&lt;p>Beyond parallelism issues, bash leverages longjmp() and frame unwinding for its
+error handling. This is understandable due to its age, chosen language, and
+minimal dependencies, but it doesn&amp;rsquo;t lend itself well to interoperability with
+rust. For pkgcraft, bash is wrapped where its C code is called from the rust
+library and then it can call back into rust support exported to C. The issue
+with that is unwinding across rust-based frames from C is undefined behavior.
+Hopefully at some point the &amp;ldquo;C-unwind&amp;rdquo; ABI&lt;sup id="fnref:2">&lt;a href="#fn:2" class="footnote-ref" role="doc-noteref">2&lt;/a>&lt;/sup> and other related FFI work in
+rust makes it into stable.&lt;/p>
+&lt;p>With respect to longjmp() usage, in order to avoid null jump buffers the forked
+version of bash tries to establish jump targets on the main entry points used
+by the rust library. This isn&amp;rsquo;t necessary for standard bash because its top
+level jump points are all in main() which isn&amp;rsquo;t used when built as a library.
+Without this, most error handling segfaults when using &lt;code>set -e&lt;/code> because bash
+tries to jump to an empty jump buffer.&lt;/p>
+&lt;p>To cap off its unfriendly error handling, bash generally dumps all its error
+messages to stderr. Clearly this isn&amp;rsquo;t wanted when used as a library,
+especially when parallelized. To avoid this, the rust library passes in
+callbacks for error and warning handling that bash calls, passing the raw
+messages back to rust which are then converted into native rust errors or
+logged.&lt;/p>
+&lt;p>The remaining issue is that unless something like &lt;code>set -e&lt;/code> is being used on the
+bash side, most errors do not cause immediate returns, exits, or any trigger
+that could be used on the rust side to return a corresponding error result. To
+work around this, the most recent bash error is stored on the rust side in a
+thread-local variable that can be accessed after relevant calls in order to
+determine their error status. This allows functionality such as returning error
+results on failed &lt;code>source&lt;/code> calls while retaining the bash error message without
+having to use &lt;code>set -e&lt;/code>, subshells, and redirection in order to achieve a
+similar effect in native bash.&lt;/p>
+&lt;h3 id="leveraging-builtins">Leveraging builtins&lt;/h3>
+&lt;p>In terms of extensibility, bash provides support for writing builtins that can
+be called like any other command. For example, &lt;code>set&lt;/code>, &lt;code>local&lt;/code>, &lt;code>echo&lt;/code>, and many
+more commands provided by bash are builtins. Pkgcraft intends to use builtins
+for all the commands that would either be exposed as functions or other public
+callables. All other internal functionality will be implemented as methods
+on the shell instance wrapping the bash library.&lt;/p>
+&lt;p>The difficulty comes with sharing state across the FFI border since the
+builtins are written in rust, but are called from C in bash. Therefore it&amp;rsquo;s not
+easy to write them in a fashion that allows reuse and inter-builtin calls while
+also passing some form of mutable context parameter. Once again, pkgcraft uses
+a mutable, thread-local instance that builtins are able to import and use
+within closures to access and modify build data as required. While somewhat
+ugly, this does allow avoiding the even uglier bash variable hacks used by
+pkgcore.&lt;/p>
+&lt;section class="footnotes" role="doc-endnotes">
+&lt;hr>
+&lt;ol>
+&lt;li id="fn:1" role="doc-endnote">
+&lt;p>Pkgcraft&amp;rsquo;s bash fork is available at &lt;a href="https://github.com/pkgcraft/bash">https://github.com/pkgcraft/bash&lt;/a>.&amp;#160;&lt;a href="#fnref:1" class="footnote-backref" role="doc-backlink">&amp;#x21a9;&amp;#xfe0e;&lt;/a>&lt;/p>
+&lt;/li>
+&lt;li id="fn:2" role="doc-endnote">
+&lt;p>&lt;a href="https://rust-lang.github.io/rfcs/2945-c-unwind-abi.html">https://rust-lang.github.io/rfcs/2945-c-unwind-abi.html&lt;/a>&amp;#160;&lt;a href="#fnref:2" class="footnote-backref" role="doc-backlink">&amp;#x21a9;&amp;#xfe0e;&lt;/a>&lt;/p>
+&lt;/li>
+&lt;/ol>
+&lt;/section></description></item></channel></rss>
